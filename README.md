@@ -36,4 +36,5 @@ prompt and `brain/app/tools/shell.py`.
 
 See [brain/README.md](brain/README.md) and [voice-client/README.md](voice-client/README.md) for
 the two halves. Both need a **free** [Gemini API key](https://aistudio.google.com/apikey); the
-integrations (ntfy push, Telegram) are free too — nothing here requires a paid service.
+Telegram integration (chat, voice messages, and phone push notifications) is free too —
+nothing here requires a paid service.

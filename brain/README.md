@@ -30,7 +30,7 @@ All endpoints except `/health` and the webhook require header `X-Jarvis-Key: <JA
 - **Tools** (`app/tools/`): `run_shell_command` (full, unrestricted shell access — deliberate,
   see the system prompt in `agent.py`), `obsidian_write_note`/`read_note`/`list_notes`/`search`
   (the vault at `./vault` is Jarvis's persistent long-term memory), `web_search`
-  (DuckDuckGo, no key), `notify_phone` (push via [ntfy.sh](https://ntfy.sh), free, no key),
+  (DuckDuckGo, no key), `notify_phone` (push to the phone via the Telegram bot),
   `end_conversation` (lets the agent signal a multi-turn session is over).
 
 ## Setup
@@ -51,8 +51,6 @@ cp .env.example .env   # fill in GEMINI_API_KEY, JARVIS_API_KEY, etc. -- see bel
 **Config (`.env`):**
 - `GEMINI_API_KEY` — https://aistudio.google.com/apikey
 - `JARVIS_API_KEY` — any long random string, shared with the PC client's `.env`
-- `NTFY_TOPIC` — pick any hard-to-guess string, install the [ntfy app](https://ntfy.sh) and
-  subscribe to that same topic name to receive `notify_phone` pushes
 - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_WEBHOOK_SECRET` / `TELEGRAM_ALLOWED_CHAT_ID` — get a bot
   token from [@BotFather](https://t.me/BotFather), generate any random string for the webhook
   secret, then call `telegram_bot.register_webhook("https://your-domain/jarvis/telegram-webhook")`

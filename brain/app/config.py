@@ -27,12 +27,8 @@ VAULT_DIR.mkdir(parents=True, exist_ok=True)
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8420"))
 
-# ntfy.sh topic for phone push notifications (app/tools/phone_notify.py) -- treat as a shared
-# secret (anyone who knows the topic name can publish to it / subscribe and read), not a real
-# credential. Install the ntfy app and subscribe to this exact topic to receive pushes.
-NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
-
-# Telegram bot (app/telegram_bot.py) -- two-way chat/voice with Jarvis from the phone.
+# Telegram bot (app/telegram_bot.py) -- two-way chat/voice with Jarvis from the phone, and the
+# delivery channel for phone push notifications (app/tools/phone_notify.py).
 # TELEGRAM_ALLOWED_CHAT_ID gates who the bot will actually respond to: Jarvis has full shell
 # access, so an unrestricted public bot would be a serious security hole. Leave empty until
 # the user's own chat_id is known (webhook logs it), then lock it down to just that id.
