@@ -22,6 +22,7 @@ import requests
 import sounddevice as sd
 import soundfile as sf
 from openwakeword.model import Model
+import pc_agent
 
 import config
 from status_window import StatusWindow
@@ -377,6 +378,7 @@ def main() -> None:
         embedding_model_path=str(config.EMBEDDING_MODEL_PATH),
         inference_framework="onnx",
     )
+    pc_agent.start()
     log.info("Jarvis-Client läuft. Höre auf 'Hey Jarvis' ... (%d Begrüßungen geladen)", len(GREETINGS))
 
     device = choose_mic(config.FRAME_SIZE)

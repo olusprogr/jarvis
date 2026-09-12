@@ -9,6 +9,7 @@ from langdetect import detect, LangDetectException
 
 from . import config, tts, agent, telegram_bot
 from .auth import require_api_key
+from .tools import pc_control
 
 DEFAULT_LANGUAGE = "de"  # used only if reply-language detection fails outright
 
@@ -146,6 +147,23 @@ async def telegram_webhook(
         raise HTTPException(403, "Invalid webhook secret")
     update = await request.json()
     background_tasks.add_task(telegram_bot.handle_update, update)
+    return {"ok": True}
+
+
+@app.get("/jarvis/pc-actions")
+def pc_actions(_auth=Depends(require_api_key)):
+    """Polled by the PC client: returns queued commands for it, and clears them."""
+    return {"actions": pc_control.take_pending()}
+
+
+@app.post("/jarvis/pc-result")
+def pc_result(payload: dict, _auth=Depends(require_api_key)):
+    """Posted by the PC client after running a command."""
+    pc_control.submit_result(
+        payload.get("id", ""),
+        payload.get("output", ""),
+        int(payload.get("exit_code", 0)),
+    )
     return {"ok": True}
 
 

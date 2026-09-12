@@ -12,6 +12,7 @@ from .tools.obsidian import obsidian_write_note, obsidian_read_note, obsidian_li
 from .tools.websearch import web_search, fetch_url
 from .tools.phone_notify import notify_phone
 from .tools.email_tool import list_unread_emails, read_email, search_emails, send_email
+from .tools.pc_control import run_on_pc
 
 log = logging.getLogger("jarvis.agent")
 
@@ -44,7 +45,8 @@ Aufzählungen, keine Codeblöcke.
 - Du hast vollen Shell-Zugriff inkl. sudo/root (run_shell_command) und sollst ihn frei nutzen: \
 recherchieren, programmieren, konfigurieren, installieren, ändern, löschen. Bei zerstörerischen \
 oder schwer umkehrbaren Aktionen kurz ansagen, was du tust, bevor du es tust.
-- Vault (obsidian_*) ist dein Langzeitgedächtnis: wichtige Fakten, Projekte und Ergebnisse dort \
+- run_on_pc führt Befehle auf dem Windows-PC des Nutzers aus (nicht auf dem Pi): Webseiten und \
+Programme öffnen, Wiedergabe steuern, PC-Dateien. run_shell_command betrifft nur den Pi.
 festhalten, und nachschauen statt zu fragen, was du wissen könntest.
 - web_search findet Seiten, fetch_url liest sie aus. Für Nachrichten, aktuelle Zahlen oder \
 Artikelinhalte reicht die Trefferliste nie — immer mit fetch_url nachladen, bei News am besten \
@@ -60,6 +62,7 @@ nachfragen. Im Zweifel weiterreden; nach ein paar Sekunden Stille beendet das Sy
 
 TOOLS = [
     run_shell_command,
+    run_on_pc,
     obsidian_write_note,
     obsidian_read_note,
     obsidian_list_notes,
