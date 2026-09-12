@@ -46,12 +46,29 @@ MAX_RECORD_SECONDS = float(os.getenv("MAX_RECORD_SECONDS", "15"))
 # 0.7 was too aggressive -- it cut the user off mid-sentence, sending 1-2s fragments that the
 # agent couldn't make sense of (and then ended the conversation on). 1.0 is the compromise.
 SILENCE_SECONDS_TO_STOP = float(os.getenv("SILENCE_SECONDS_TO_STOP", "1.0"))
-SILENCE_RMS_THRESHOLD = float(os.getenv("SILENCE_RMS_THRESHOLD", "300"))  # int16 RMS
 MIN_RECORD_SECONDS = float(os.getenv("MIN_RECORD_SECONDS", "0.6"))
 # Noise gate: this many *consecutive* loud frames (at 80ms/frame, 3 = ~240ms) are required
 # before a sound counts as "speech started" -- filters out coughs/door clunks/brief background
 # noise that used to trigger a recording off a single loud frame.
 SPEECH_START_FRAMES_NEEDED = int(os.getenv("SPEECH_START_FRAMES_NEEDED", "3"))
+
+# --- Adaptive speech threshold -----------------------------------------------------------
+# Replaces a single hardcoded RMS cutoff (was 300), which only ever suited one room and one mic:
+# too high and quiet speech is missed, too low and a fan or TV counts as speech. Instead the
+# ambient noise floor is measured continuously and the speech threshold is derived from it.
+SILENCE_RMS_THRESHOLD = float(os.getenv("SILENCE_RMS_THRESHOLD", "0")) or None  # set to pin it
+NOISE_FLOOR_ALPHA = float(os.getenv("NOISE_FLOOR_ALPHA", "0.99"))   # closer to 1 = adapts slower
+NOISE_FLOOR_QUIET_GATE = float(os.getenv("NOISE_FLOOR_QUIET_GATE", "2.2"))  # only learn below floor*this
+SPEECH_RATIO = float(os.getenv("SPEECH_RATIO", "3.5"))              # speech = this much above the floor
+MIN_SPEECH_RMS = float(os.getenv("MIN_SPEECH_RMS", "180"))          # absolute floor: never hypersensitive
+MAX_SPEECH_RMS = float(os.getenv("MAX_SPEECH_RMS", "2500"))         # absolute ceiling: never go deaf
+
+# --- Microphone probing ------------------------------------------------------------------
+# On startup each candidate device is opened briefly and its peak level measured, so a silent
+# or unopenable default mic gets detected and skipped instead of silently hearing nothing.
+MIC_PROBE_SECONDS = float(os.getenv("MIC_PROBE_SECONDS", "0.4"))
+MIC_SILENT_RMS = float(os.getenv("MIC_SILENT_RMS", "8"))  # peak below this = effectively dead
+MIC_AUTO_FALLBACK = os.getenv("MIC_AUTO_FALLBACK", "1") != "0"  # scan for a working mic if needed
 
 # Multi-turn conversation: after the wake word (or after Jarvis finishes speaking), how long to
 # wait for the user to start talking before ending the conversation automatically.

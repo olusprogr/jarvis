@@ -16,6 +16,7 @@ from io import BytesIO
 from pathlib import Path
 
 import edge_tts
+import requests
 from google import genai
 from google.genai import types
 
@@ -30,6 +31,15 @@ log = logging.getLogger("jarvis.tts")
 # - a mild rubberband pitch shift (0.94, i.e. ~-6%) on top of edge-tts's own --pitch=-15Hz
 #   -- much gentler than the 0.85-0.88 factors that sounded robotic on the Piper voices earlier,
 #   the EQ chain is doing most of the "deeper" work here, not the pitch shift itself.
+# ElevenLabs: best voice quality of the backends here, but the only paid one -- used first when
+# ELEVENLABS_API_KEY is set, otherwise skipped entirely so the free chain below still works.
+# Raw HTTP rather than the `elevenlabs` package: one endpoint, no reason for another dependency.
+ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+ELEVENLABS_MODEL = "eleven_multilingual_v2"  # handles German and English from one voice
+ELEVENLABS_SAMPLE_RATE = 24000
+# No EQ chain here, unlike Edge: that chain exists to fake depth into Conrad's voice, whereas
+# with ElevenLabs you just pick a voice that's already deep.
+
 EDGE_VOICE = {"de": "de-DE-ConradNeural", "en": "en-US-ChristopherNeural"}
 EDGE_PITCH = "-15Hz"
 EDGE_FILTER_CHAIN = (
@@ -75,6 +85,21 @@ def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int) -> bytes:
         wf.setframerate(sample_rate)
         wf.writeframes(pcm_bytes)
     return buf.getvalue()
+
+
+def synthesize_elevenlabs(text: str, language: str = "de") -> bytes:
+    """ElevenLabs TTS. Requests raw PCM so the result only needs a WAV header, no transcoding."""
+    if not config.ELEVENLABS_API_KEY or not config.ELEVENLABS_VOICE_ID:
+        raise RuntimeError("ElevenLabs nicht konfiguriert")
+    resp = requests.post(
+        ELEVENLABS_URL.format(voice_id=config.ELEVENLABS_VOICE_ID),
+        headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+        params={"output_format": f"pcm_{ELEVENLABS_SAMPLE_RATE}"},
+        json={"text": text, "model_id": config.ELEVENLABS_MODEL},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return _pcm_to_wav(resp.content, ELEVENLABS_SAMPLE_RATE)
 
 
 def synthesize_edge(text: str, language: str = "de") -> bytes:
@@ -154,8 +179,20 @@ def synthesize_piper(text: str, language: str = "en") -> bytes:
 
 
 def synthesize(text: str, language: str = "de") -> bytes:
-    """Active TTS entry point used by main.py. Edge (free, unlimited, approved voice) first,
-    then Gemini (better quality but daily-capped), then local Piper as the always-works floor."""
+    """Active TTS entry point used by main.py.
+
+    Ordered best-voice-first, each falling through to the next on any failure, ending at a
+    backend that can never fail for quota or network reasons:
+      ElevenLabs (best, paid, skipped unless configured)
+      -> Edge (free, unlimited, the +EQ Conrad voice)
+      -> Gemini (good, but ~10 requests/day on the free tier)
+      -> Piper (local, unlimited, plainest).
+    """
+    if config.ELEVENLABS_API_KEY and config.ELEVENLABS_VOICE_ID:
+        try:
+            return synthesize_elevenlabs(text, language)
+        except Exception:
+            log.exception("ElevenLabs TTS failed, trying Edge...")
     try:
         return synthesize_edge(text, language)
     except Exception:

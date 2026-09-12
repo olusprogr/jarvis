@@ -98,6 +98,100 @@ def rms(frame: np.ndarray) -> float:
     return float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
 
 
+class NoiseFloor:
+    """Tracks the room's ambient noise level and derives the speech threshold from it.
+
+    A single hardcoded RMS cutoff only ever fits one room and one mic: too high and quiet
+    speech is missed, too low and a fan or a TV registers as speech. So the floor is learned
+    continuously -- but *only* from frames that are already quiet relative to the current floor
+    (`NOISE_FLOOR_QUIET_GATE`), otherwise the user's own speech would drag the floor up and
+    progressively deafen the gate. Clamped between MIN/MAX so a silent room can't make it
+    hypersensitive and a loud one can't make it deaf.
+    """
+
+    def __init__(self):
+        self.floor = config.MIN_SPEECH_RMS / config.SPEECH_RATIO
+
+    def update(self, level: float) -> None:
+        if level < self.floor * config.NOISE_FLOOR_QUIET_GATE:
+            a = config.NOISE_FLOOR_ALPHA
+            self.floor = max(a * self.floor + (1.0 - a) * level, 1e-3)
+
+    @property
+    def threshold(self) -> float:
+        if config.SILENCE_RMS_THRESHOLD:  # explicitly pinned in .env -- honour it, don't adapt
+            return config.SILENCE_RMS_THRESHOLD
+        return min(max(self.floor * config.SPEECH_RATIO, config.MIN_SPEECH_RMS),
+                   config.MAX_SPEECH_RMS)
+
+
+noise = NoiseFloor()
+
+
+def probe_mic(device, blocksize: int) -> float | None:
+    """Opens a device briefly and returns its peak RMS, or None if it can't be opened."""
+    try:
+        with sd.InputStream(device=device, samplerate=config.SAMPLE_RATE, channels=1,
+                            dtype="int16", blocksize=blocksize) as s:
+            peak = 0.0
+            deadline = time.monotonic() + config.MIC_PROBE_SECONDS
+            while time.monotonic() < deadline:
+                data, _ = s.read(blocksize)
+                peak = max(peak, rms(data[:, 0]))
+            return peak
+    except Exception:
+        return None
+
+
+def choose_mic(blocksize: int):
+    """Picks an input device that actually delivers audio.
+
+    Order: the configured MIC_DEVICE (warn loudly if it probes silent, but respect the choice),
+    then the OS default, then -- if that's silent/unopenable and MIC_AUTO_FALLBACK is on -- the
+    loudest of everything else. Without this a silent default mic looks exactly like "Jarvis
+    ignores me", with nothing in the logs to explain it (which is precisely what happened here
+    once already, and needed manual device probing to diagnose)."""
+    if config.MIC_DEVICE is not None:
+        peak = probe_mic(config.MIC_DEVICE, blocksize)
+        if peak is None:
+            log.warning("Mic %r laesst sich nicht oeffnen -- versuche es trotzdem.", config.MIC_DEVICE)
+        elif peak < config.MIC_SILENT_RMS:
+            log.warning("Mic %r wirkt stumm (peak=%.1f). Pruefe Windows-Pegel oder setze MIC_DEVICE um.",
+                        config.MIC_DEVICE, peak)
+        else:
+            log.info("Mic %r ok (peak=%.1f).", config.MIC_DEVICE, peak)
+        return config.MIC_DEVICE
+
+    default = sd.default.device[0] if sd.default.device else None
+    if default is not None and default >= 0:
+        peak = probe_mic(default, blocksize)
+        if peak is not None and peak >= config.MIC_SILENT_RMS:
+            log.info("Standard-Mic [%d] %s (peak=%.1f).", default,
+                     sd.query_devices(default)["name"], peak)
+            return default
+        log.warning("Standard-Mic [%s] stumm oder nicht nutzbar (peak=%s).", default,
+                    f"{peak:.1f}" if peak is not None else "nicht oeffenbar")
+
+    if not config.MIC_AUTO_FALLBACK:
+        return default
+
+    best, best_peak = None, -1.0
+    for idx, dev in enumerate(sd.query_devices()):
+        if dev["max_input_channels"] < 1 or idx == default:
+            continue
+        peak = probe_mic(idx, blocksize)
+        if peak is not None and peak > best_peak:
+            best, best_peak = idx, peak
+
+    if best is not None and best_peak >= config.MIC_SILENT_RMS:
+        log.info("Mic automatisch gewaehlt: [%d] %s (peak=%.1f).", best,
+                 sd.query_devices(best)["name"], best_peak)
+        return best
+
+    log.warning("Kein aktives Mic gefunden -- nutze Standard.")
+    return default
+
+
 def record_utterance(stream: sd.InputStream, start_timeout_seconds: float | None = None):
     """Waits (up to start_timeout_seconds, if given) for speech to begin, then records until
     trailing silence or MAX_RECORD_SECONDS. Returns int16 mono samples, or None if
@@ -131,10 +225,13 @@ def record_utterance(stream: sd.InputStream, start_timeout_seconds: float | None
         frame = data[:, 0]
         frames_read += 1
         level = rms(frame)
-        loud = level >= config.SILENCE_RMS_THRESHOLD
+        threshold = noise.threshold
+        loud = level >= threshold
+        if not loud:
+            noise.update(level)  # keep learning the room, but never from the user's own speech
         # Scale against ~4x the speech threshold so normal speech fills a good chunk of the bar
         # without instantly pinning it at full.
-        status.set_level(level / (config.SILENCE_RMS_THRESHOLD * 4))
+        status.set_level(level / (threshold * 4))
 
         if not speech_started:
             preroll.append(frame.copy())
@@ -282,17 +379,21 @@ def main() -> None:
     )
     log.info("Jarvis-Client läuft. Höre auf 'Hey Jarvis' ... (%d Begrüßungen geladen)", len(GREETINGS))
 
-    log.info("Mic-Device: %s", config.MIC_DEVICE if config.MIC_DEVICE is not None else "(System-Standard)")
+    device = choose_mic(config.FRAME_SIZE)
+    log.info("Mic-Device: %s | Start-Schwelle: %.0f", device, noise.threshold)
     with sd.InputStream(
         samplerate=config.SAMPLE_RATE,
         channels=1,
         dtype="int16",
         blocksize=config.FRAME_SIZE,
-        device=config.MIC_DEVICE,
+        device=device,
     ) as stream:
         while True:
             data, _ = stream.read(config.FRAME_SIZE)
             frame = data[:, 0]
+            # Idle listening is the best time to learn the room's noise floor -- it's quiet by
+            # definition here, so the threshold is already tuned when a conversation starts.
+            noise.update(rms(frame))
             predictions = oww.predict(frame)
             score = predictions.get(config.WAKE_WORD_MODEL, 0.0)
 

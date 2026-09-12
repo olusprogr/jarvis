@@ -36,6 +36,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 TELEGRAM_ALLOWED_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_CHAT_ID", "")
 
+# ElevenLabs TTS (app/tts.py) -- best-sounding backend, and the only paid one. Leave the key
+# empty to skip it entirely; the free Edge/Gemini/Piper chain still works.
+# Voice IDs come from elevenlabs.io -> Voices (pick one, "ID" in its detail panel).
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
+ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+
 # Email (app/tools/email_tool.py) -- plain IMAP/SMTP with a Gmail "App Password"
 # (myaccount.google.com/apppasswords), not OAuth -- no Cloud Console app registration needed.
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "")
