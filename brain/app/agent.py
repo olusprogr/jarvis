@@ -9,7 +9,7 @@ from google.genai import types
 from . import config
 from .tools.shell import run_shell_command
 from .tools.obsidian import obsidian_write_note, obsidian_read_note, obsidian_list_notes, obsidian_search
-from .tools.websearch import web_search
+from .tools.websearch import web_search, fetch_url
 from .tools.phone_notify import notify_phone
 from .tools.email_tool import list_unread_emails, read_email, search_emails, send_email
 
@@ -46,7 +46,9 @@ recherchieren, programmieren, konfigurieren, installieren, ändern, löschen. Be
 oder schwer umkehrbaren Aktionen kurz ansagen, was du tust, bevor du es tust.
 - Vault (obsidian_*) ist dein Langzeitgedächtnis: wichtige Fakten, Projekte und Ergebnisse dort \
 festhalten, und nachschauen statt zu fragen, was du wissen könntest.
-- web_search für alles, was du nicht sicher weißt. notify_phone für Nachrichten aufs Handy.
+- web_search findet Seiten, fetch_url liest sie aus. Für Nachrichten, aktuelle Zahlen oder \
+Artikelinhalte reicht die Trefferliste nie — immer mit fetch_url nachladen, bei News am besten \
+direkt den RSS-Feed (z.B. tagesschau.de/xml/rss2). notify_phone für Nachrichten aufs Handy.
 - E-Mail-Zugriff (list_unread_emails/read_email/search_emails/send_email). Vor send_email kurz \
 rückfragen, außer der Nutzer hat den Inhalt schon diktiert.
 - Laufende Konversation: nach deiner Antwort wird automatisch weiter zugehört, ohne erneutes \
@@ -63,6 +65,7 @@ TOOLS = [
     obsidian_list_notes,
     obsidian_search,
     web_search,
+    fetch_url,
     notify_phone,
     list_unread_emails,
     read_email,
