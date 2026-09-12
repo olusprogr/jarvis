@@ -3,6 +3,7 @@ multi-turn conversation (no need to repeat the wake word between turns) until th
 they're done or goes quiet for CONVERSATION_SILENCE_TIMEOUT seconds.
 """
 import io
+import json
 import logging
 import random
 import subprocess
@@ -26,6 +27,7 @@ import soundfile as sf
 from openwakeword.model import Model
 
 import config
+from status_window import StatusWindow
 
 _handlers = [logging.FileHandler(config.LOG_DIR / "client.log", encoding="utf-8")]
 if sys.stderr is not None:  # console handler only makes sense with python.exe, not pythonw.exe
@@ -38,6 +40,15 @@ logging.basicConfig(
 log = logging.getLogger("jarvis.client")
 
 GREETINGS = sorted(config.GREETINGS_DIR.glob("greeting-*.wav"))
+GOODBYES = sorted(config.GREETINGS_DIR.glob("goodbye-*.wav"))
+
+# Live status overlay -- shows what Jarvis is doing right now + a mic level meter, so it's
+# always clear whose turn it is and whether the mic is actually picking the user up.
+status = StatusWindow()
+
+# Reused across requests so the TCP connection to the Pi stays warm (keep-alive) instead of
+# a fresh handshake every single turn -- small but free latency win on every exchange.
+_http = requests.Session()
 
 
 def notify(title: str, message: str, duration_ms: int = 4000) -> None:
@@ -82,17 +93,26 @@ def play_audio(stream: sd.InputStream, data: np.ndarray, sr: int) -> None:
     """Pauses the mic stream while playing, then resumes -- otherwise the mic picks up Jarvis's
     own voice through speaker bleed, which gets read as a buffered 'utterance' the instant the
     next record_utterance() starts, causing a spurious extra turn (the 'Du bist dran' spam /
-    duplicated recordings the user reported)."""
+    duplicated recordings the user reported earlier)."""
     stream.stop()
     try:
         sd.play(data, sr)
         sd.wait()
     finally:
         stream.start()
+        # The device needs a moment to actually start delivering real audio again -- the first
+        # reads right after stream.start() can be silence/garbage while it re-syncs. Without this,
+        # the *next* record_utterance() call would start reading during that dead window and
+        # could miss the user's first syllable entirely (silence -> no speech detected -> no
+        # reply at all, which is what "spreche ich und es kommt keine Nachricht" looked like).
+        try:
+            stream.read(config.FRAME_SIZE * 2)
+        except Exception:
+            pass
 
 
 def play_greeting(stream: sd.InputStream) -> None:
-    """Plays one of the pre-generated 'Ich höre Sie, Master.'-style clips instantly --
+    """Plays one of the pre-generated 'Bereit, Master.'-style clips instantly --
     no network round-trip, so there's zero delay between the wake word and *some* response."""
     if not GREETINGS:
         return
@@ -101,6 +121,18 @@ def play_greeting(stream: sd.InputStream) -> None:
         play_audio(stream, data, sr)
     except Exception:
         log.exception("Begrüßung konnte nicht abgespielt werden")
+
+
+def play_goodbye(stream: sd.InputStream) -> None:
+    """Says 'Chat beendet' out loud before the conversation actually closes, so the end of a
+    conversation is audible rather than just a silent timeout the user has to infer."""
+    if not GOODBYES:
+        return
+    try:
+        data, sr = sf.read(str(random.choice(GOODBYES)), dtype="float32")
+        play_audio(stream, data, sr)
+    except Exception:
+        log.exception("Verabschiedung konnte nicht abgespielt werden")
 
 
 def rms(frame: np.ndarray) -> float:
@@ -133,20 +165,30 @@ def record_utterance(stream: sd.InputStream, start_timeout_seconds: float | None
     speech_started = False
     frames_read = 0
 
+    seconds_per_frame = config.FRAME_SIZE / config.SAMPLE_RATE
+
     while frames_read < max_frames:
         data, _ = stream.read(config.FRAME_SIZE)
         frame = data[:, 0]
         frames_read += 1
-        loud = rms(frame) >= config.SILENCE_RMS_THRESHOLD
+        level = rms(frame)
+        loud = level >= config.SILENCE_RMS_THRESHOLD
+        # Scale against ~4x the speech threshold so normal speech fills a good chunk of the bar
+        # without instantly pinning it at full.
+        status.set_level(level / (config.SILENCE_RMS_THRESHOLD * 4))
 
         if not speech_started:
             preroll.append(frame.copy())
             consecutive_loud = consecutive_loud + 1 if loud else 0
             if consecutive_loud >= confirm_frames_needed:
                 speech_started = True
+                status.set_state("recording")
+                status.set_countdown(None)
                 frames.extend(preroll)  # keep the onset, not just the frames after confirmation
-            elif start_timeout_frames is not None and frames_read >= start_timeout_frames:
-                return None  # nobody spoke in time -- end the conversation
+            elif start_timeout_frames is not None:
+                if frames_read >= start_timeout_frames:
+                    return None  # nobody spoke in time -- end the conversation
+                status.set_countdown((start_timeout_frames - frames_read) * seconds_per_frame)
             continue
 
         frames.append(frame.copy())
@@ -159,21 +201,42 @@ def record_utterance(stream: sd.InputStream, start_timeout_seconds: float | None
     return np.concatenate(frames)
 
 
+def _iter_frames(resp):
+    """Parses the streaming wire format from /jarvis/command-stream: repeated frames of
+    [1 byte type][4 bytes big-endian length][payload]. Yields (type_byte, payload)."""
+    buf = b""
+    for piece in resp.iter_content(8192):
+        buf += piece
+        while len(buf) >= 5:
+            kind = buf[0:1]
+            length = int.from_bytes(buf[1:5], "big")
+            if len(buf) < 5 + length:
+                break
+            yield kind, buf[5:5 + length]
+            buf = buf[5 + length:]
+
+
 def send_to_jarvis(stream: sd.InputStream, audio: np.ndarray, session_id: str) -> bool | None:
-    """Sends one utterance, plays back the reply. Returns True if Jarvis ended the
-    conversation, False to keep it going, or None if the request itself failed."""
+    """Sends one utterance, plays the reply as it streams in sentence by sentence. Returns True
+    if Jarvis ended the conversation, False to keep going, None if the request failed.
+
+    Uses the streaming endpoint so playback of sentence 1 can start while the backend is still
+    generating/synthesizing the rest -- the mic stays paused across the whole sequence, not
+    per-sentence, so it never picks up Jarvis's own audio between chunks."""
     buf = io.BytesIO()
     sf.write(buf, audio, config.SAMPLE_RATE, format="WAV", subtype="PCM_16")
     buf.seek(0)
 
     log.info("Sende %.1fs Audio an %s ...", len(audio) / config.SAMPLE_RATE, config.JARVIS_URL)
+    status.set_state("thinking")
     try:
-        resp = requests.post(
-            f"{config.JARVIS_URL}/command",
+        resp = _http.post(
+            f"{config.JARVIS_URL}/command-stream",
             headers={"X-Jarvis-Key": config.JARVIS_API_KEY},
             files={"audio": ("clip.wav", buf, "audio/wav")},
             data={"session_id": session_id},
             timeout=90,
+            stream=True,
         )
     except requests.RequestException as e:
         log.error("Anfrage an Jarvis fehlgeschlagen: %s", e)
@@ -185,14 +248,42 @@ def send_to_jarvis(stream: sd.InputStream, audio: np.ndarray, session_id: str) -
         notify("Jarvis", f"Fehler vom Server ({resp.status_code})")
         return None
 
-    reply_text = urllib.parse.unquote(resp.headers.get("X-Reply-Text", ""))
-    ended = resp.headers.get("X-Conversation-Ended", "false") == "true"
-    log.info("Jarvis: %s (ended=%s)", reply_text, ended)
+    ended = False
+    notified = False
+    mic_paused = False
+    try:
+        for kind, payload in _iter_frames(resp):
+            if kind == b"S":
+                # Sentence text arrives just before its audio -- show it live in the status
+                # window, and fire the (slower, transient) toast once for the first sentence.
+                text = json.loads(payload.decode("utf-8")).get("text", "")
+                if text:
+                    status.set_state("speaking", text)
+                    if not notified:
+                        notify("Jarvis spricht", text[:250])
+                        notified = True
+            elif kind == b"A":
+                if not mic_paused:
+                    stream.stop()
+                    mic_paused = True
+                chunk_audio, sr = sf.read(io.BytesIO(payload), dtype="float32")
+                sd.play(chunk_audio, sr)
+                sd.wait()
+            elif kind == b"M":
+                meta = json.loads(payload.decode("utf-8"))
+                ended = bool(meta.get("ended"))
+                log.info("Jarvis: %s (ended=%s)", meta.get("reply", ""), ended)
+    except Exception:
+        log.exception("Fehler beim Empfangen der Antwort")
+        return None
+    finally:
+        if mic_paused:
+            stream.start()
+            try:
+                stream.read(config.FRAME_SIZE * 2)  # discard re-sync garbage, see play_audio()
+            except Exception:
+                pass
 
-    reply_audio, sr = sf.read(io.BytesIO(resp.content), dtype="float32")
-    playback_ms = int(len(reply_audio) / sr * 1000)
-    notify("Jarvis spricht", reply_text[:250] or "(keine Antwort erhalten)", duration_ms=playback_ms)
-    play_audio(stream, reply_audio, sr)
     return ended
 
 
@@ -200,24 +291,36 @@ def run_conversation(stream: sd.InputStream) -> None:
     """One full 'Hey Jarvis' session: greeting, then turn after turn until Jarvis calls
     end_conversation(), the request fails, or the user goes quiet for too long."""
     session_id = str(uuid.uuid4())
-    play_greeting(stream)
+    status.show("greeting")
+    try:
+        play_greeting(stream)
 
-    while True:
-        notify("Jarvis hört zu", "Du bist dran ...", duration_ms=int(config.CONVERSATION_SILENCE_TIMEOUT * 1000))
-        utterance = record_utterance(stream, start_timeout_seconds=config.CONVERSATION_SILENCE_TIMEOUT)
-        if utterance is None:
-            log.info("Keine Antwort innerhalb %.0fs -- Chat beendet.", config.CONVERSATION_SILENCE_TIMEOUT)
-            notify("Jarvis", "Chat beendet.")
-            return
+        while True:
+            status.set_state("waiting")
+            notify("Jarvis hört zu", "Du bist dran ...", duration_ms=int(config.CONVERSATION_SILENCE_TIMEOUT * 1000))
+            utterance = record_utterance(stream, start_timeout_seconds=config.CONVERSATION_SILENCE_TIMEOUT)
+            if utterance is None:
+                log.info("Keine Antwort innerhalb %.0fs -- Chat beendet.", config.CONVERSATION_SILENCE_TIMEOUT)
+                status.set_state("ended")
+                notify("Jarvis", "Chat beendet.")
+                play_goodbye(stream)
+                return
 
-        ended = send_to_jarvis(stream, utterance, session_id)
-        if ended is None:  # request failed -- don't loop forever on a broken connection
-            notify("Jarvis", "Chat beendet (Fehler).")
-            return
-        if ended:
-            notify("Jarvis", "Chat beendet.")
-            return
-        # else: loop back around for the next turn, still listening
+            ended = send_to_jarvis(stream, utterance, session_id)
+            if ended is None:  # request failed -- don't loop forever on a broken connection
+                status.set_state("ended", "Verbindungsfehler")
+                notify("Jarvis", "Chat beendet (Fehler).")
+                time.sleep(1.5)
+                return
+            if ended:
+                log.info("Jarvis hat das Gespräch beendet.")
+                status.set_state("ended")
+                notify("Jarvis", "Chat beendet.")
+                time.sleep(1.2)
+                return
+            # else: loop back around for the next turn, still listening
+    finally:
+        status.hide()
 
 
 def main() -> None:

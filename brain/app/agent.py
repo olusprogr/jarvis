@@ -2,6 +2,7 @@
 (in-memory only — resets on service restart). This is the 'brain'."""
 import contextvars
 import logging
+import re
 from google import genai
 from google.genai import types
 
@@ -10,6 +11,7 @@ from .tools.shell import run_shell_command
 from .tools.obsidian import obsidian_write_note, obsidian_read_note, obsidian_list_notes, obsidian_search
 from .tools.websearch import web_search
 from .tools.phone_notify import notify_phone
+from .tools.email_tool import list_unread_emails, read_email, search_emails, send_email
 
 log = logging.getLogger("jarvis.agent")
 
@@ -54,12 +56,20 @@ was du eigentlich schon wissen solltest.
 - Nutze web_search für aktuelle Informationen, die du nicht sicher weißt.
 - Nutze notify_phone, wenn der Nutzer darum bittet, aufs Handy benachrichtigt/"angerufen" zu \
 werden, oder proaktiv bei wichtigen Dingen, die er auch unterwegs wissen sollte.
+- Du hast Zugriff auf das E-Mail-Postfach des Nutzers (list_unread_emails/read_email/\
+search_emails/send_email). Frag kurz nach, bevor du in seinem Namen eine E-Mail abschickst \
+(send_email), außer er hat den genauen Inhalt bereits selbst diktiert.
 - Sei präzise und handle direkt, statt nur Vorschläge zu machen — du bist ein Assistent, \
 der Dinge erledigt, kein Chatbot, der nur redet.
-- Der Nutzer spricht mit dir in einer laufenden Konversation: nach deiner Antwort hört das \
-System automatisch weiter zu, ohne dass "Hey Jarvis" erneut gesagt werden muss. Ruf \
-end_conversation() auf, wenn der Nutzer erkennbar fertig ist (Verabschiedung, "Chat beenden", \
-"das wars", o.ä.) oder das Gespräch klar abgeschlossen ist -- nicht einfach nach jeder Antwort.
+- Der Nutzer spricht mit dir in einer laufenden Konversation, wie mit einem Menschen: nach \
+deiner Antwort hört das System automatisch weiter zu, ohne dass "Hey Jarvis" erneut gesagt \
+werden muss. Bleib im Gespräch und antworte einfach immer weiter.
+- end_conversation() ist die absolute Ausnahme: Ruf es NUR, wenn der Nutzer sich ausdrücklich \
+verabschiedet ("tschüss", "das wars", "Chat beenden", "danke, das ist alles"). Ruf es NIEMALS, \
+weil eine Frage beantwortet ist, weil du nichts verstanden hast, oder weil die Aufnahme \
+abgebrochen/unverständlich klang. Wenn du etwas nicht verstehst: frag nach und lass das \
+Gespräch offen. Im Zweifel immer weiterreden statt beenden -- das System beendet nach ein paar \
+Sekunden Stille von selbst.
 """
 
 TOOLS = [
@@ -70,6 +80,10 @@ TOOLS = [
     obsidian_search,
     web_search,
     notify_phone,
+    list_unread_emails,
+    read_email,
+    search_emails,
+    send_email,
     end_conversation,
 ]
 
@@ -110,7 +124,7 @@ def ask(session_id: str, user_text: str) -> tuple[str, bool]:
         _current_session_id.reset(token)
     reply = (response.text or "").strip()
     log.info("[%s] Jarvis: %s", session_id, reply)
-    return reply or "Entschuldigung, dazu ist mir gerade nichts eingefallen.", _end_flags.get(session_id, False)
+    return reply or "Kannst du das nochmal sagen?", _end_flags.get(session_id, False)
 
 
 def ask_audio(session_id: str, audio_bytes: bytes, mime_type: str = "audio/wav") -> tuple[str, bool]:
@@ -130,4 +144,60 @@ def ask_audio(session_id: str, audio_bytes: bytes, mime_type: str = "audio/wav")
         _current_session_id.reset(token)
     reply = (response.text or "").strip()
     log.info("[%s] Jarvis: %s", session_id, reply)
-    return reply or "Entschuldigung, dazu ist mir gerade nichts eingefallen.", _end_flags.get(session_id, False)
+    return reply or "Kannst du das nochmal sagen?", _end_flags.get(session_id, False)
+
+
+# Sentence-ish boundaries: split on . ! ? : ; and newlines, keeping the punctuation. Used to
+# chop the streamed reply into speakable pieces so TTS can start on sentence 1 while Gemini is
+# still generating sentence 2 -- the whole point of streaming here is perceived latency.
+_SENTENCE_END = re.compile(r"(?<=[.!?:;])\s+|\n+")
+
+
+def ask_audio_streaming(session_id: str, audio_bytes: bytes, mime_type: str = "audio/wav"):
+    """Like ask_audio(), but a generator yielding (sentence_text, is_final, ended) as Gemini
+    produces them. `ended` is only meaningful on the final yield (the end_conversation tool may
+    not have been called yet when earlier sentences are emitted)."""
+    chat = get_session(session_id)
+    _end_flags[session_id] = False
+    token = _current_session_id.set(session_id)
+    buffer = ""
+    full_reply = ""
+    try:
+        log.info("[%s] User (audio, %d bytes, streaming)", session_id, len(audio_bytes))
+        for chunk in chat.send_message_stream([
+            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+        ]):
+            # chunk.text is None on non-text parts (e.g. the function_call chunks that
+            # automatic function calling emits) -- skip those, AFC handles them itself.
+            if not chunk.text:
+                continue
+            buffer += chunk.text
+            # Emit every complete sentence currently in the buffer, keep the trailing partial.
+            while True:
+                match = _SENTENCE_END.search(buffer)
+                if not match:
+                    break
+                sentence, buffer = buffer[: match.end()].strip(), buffer[match.end():]
+                if sentence:
+                    full_reply += sentence + " "
+                    yield sentence, False, False
+    finally:
+        _current_session_id.reset(token)
+
+    tail = buffer.strip()
+    if tail:
+        full_reply += tail
+    full_reply = full_reply.strip()
+    ended = _end_flags.get(session_id, False)
+
+    if not full_reply:
+        # Empty reply means the model had nothing to say -- in practice this happens when the
+        # recording was a clipped fragment or noise. Treat it as "didn't catch that", never as
+        # a reason to end: an empty goodbye leaves the user staring at a dead conversation.
+        log.info("[%s] Leere Antwort (ended=%s), frage nach statt zu beenden.", session_id, ended)
+        yield "Kannst du das nochmal sagen?", True, False
+        return
+
+    log.info("[%s] Jarvis: %s", session_id, full_reply)
+    # Final yield carries the trailing partial sentence (if any) plus the real `ended` flag.
+    yield tail or "", True, ended

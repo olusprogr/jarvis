@@ -1,9 +1,10 @@
 import asyncio
+import json
 import logging
 import urllib.parse
 
 from fastapi import BackgroundTasks, FastAPI, Depends, Header, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response, JSONResponse, StreamingResponse
 from langdetect import detect, LangDetectException
 
 from . import config, tts, agent, telegram_bot
@@ -75,6 +76,60 @@ async def voice_command(
         "X-Conversation-Ended": "true" if ended else "false",
     }
     return Response(content=wav_bytes, media_type="audio/wav", headers=headers)
+
+
+@app.post("/jarvis/command-stream")
+async def voice_command_stream(
+    audio: UploadFile = File(...),
+    session_id: str = Form(default="default"),
+    _auth=Depends(require_api_key),
+):
+    """Streaming version of /jarvis/command: Gemini's reply is split into sentences as it's
+    generated, each sentence is synthesized and sent immediately, so the client can start
+    playing sentence 1 while sentence 2 is still being generated. Cuts perceived latency a lot
+    on longer replies.
+
+    Wire format -- a sequence of frames, each:
+        1 byte  type: b'S' = sentence text (UTF-8 JSON {"text": ...}), b'A' = audio (a complete
+                WAV for the preceding sentence), b'M' = final metadata (UTF-8 JSON)
+        4 bytes big-endian payload length
+        N bytes payload
+    Each sentence is sent as an b'S' frame *before* its b'A' frame, so the client can show a
+    notification the moment Jarvis starts speaking rather than after playback finishes.
+    The final frame is always type b'M' with {"reply": "...", "ended": bool}.
+    """
+    audio_bytes = await audio.read()
+    mime_type = "audio/wav" if (audio.filename or "").endswith(".wav") else "audio/webm"
+
+    def frame(kind: bytes, payload: bytes) -> bytes:
+        return kind + len(payload).to_bytes(4, "big") + payload
+
+    async def generate():
+        loop = asyncio.get_running_loop()
+        # The agent generator blocks (network + tool calls), so pull it on a worker thread --
+        # same reason tts.synthesize goes through to_thread (see /jarvis/command).
+        agen = agent.ask_audio_streaming(session_id, audio_bytes, mime_type=mime_type)
+        sentences: list[str] = []
+        ended = False
+        sentinel = object()
+        while True:
+            item = await loop.run_in_executor(None, lambda: next(agen, sentinel))
+            if item is sentinel:
+                break
+            sentence, is_final, chunk_ended = item
+            if sentence:
+                sentences.append(sentence)
+                yield frame(b"S", json.dumps({"text": sentence}).encode("utf-8"))
+                language = detect_reply_language(sentence)
+                wav = await asyncio.to_thread(tts.synthesize, sentence, language)
+                yield frame(b"A", wav)
+            if is_final:
+                ended = chunk_ended
+                break
+        reply = " ".join(sentences).strip()
+        yield frame(b"M", json.dumps({"reply": reply, "ended": ended}).encode("utf-8"))
+
+    return StreamingResponse(generate(), media_type="application/octet-stream")
 
 
 @app.post("/jarvis/telegram-webhook")

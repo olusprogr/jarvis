@@ -39,3 +39,12 @@ NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 TELEGRAM_ALLOWED_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_CHAT_ID", "")
+
+# Email (app/tools/email_tool.py) -- plain IMAP/SMTP with a Gmail "App Password"
+# (myaccount.google.com/apppasswords), not OAuth -- no Cloud Console app registration needed.
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "")
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
+EMAIL_IMAP_HOST = os.getenv("EMAIL_IMAP_HOST", "imap.gmail.com")
+EMAIL_IMAP_PORT = int(os.getenv("EMAIL_IMAP_PORT", "993"))
+EMAIL_SMTP_HOST = os.getenv("EMAIL_SMTP_HOST", "smtp.gmail.com")
+EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "465"))

@@ -43,7 +43,9 @@ FRAME_SIZE = 1280  # 80ms at 16kHz, openWakeWord's expected chunk size
 
 # Recording (after wake word triggers, and for each turn within a conversation)
 MAX_RECORD_SECONDS = float(os.getenv("MAX_RECORD_SECONDS", "15"))
-SILENCE_SECONDS_TO_STOP = float(os.getenv("SILENCE_SECONDS_TO_STOP", "1.2"))
+# 0.7 was too aggressive -- it cut the user off mid-sentence, sending 1-2s fragments that the
+# agent couldn't make sense of (and then ended the conversation on). 1.0 is the compromise.
+SILENCE_SECONDS_TO_STOP = float(os.getenv("SILENCE_SECONDS_TO_STOP", "1.0"))
 SILENCE_RMS_THRESHOLD = float(os.getenv("SILENCE_RMS_THRESHOLD", "300"))  # int16 RMS
 MIN_RECORD_SECONDS = float(os.getenv("MIN_RECORD_SECONDS", "0.6"))
 # Noise gate: this many *consecutive* loud frames (at 80ms/frame, 3 = ~240ms) are required
@@ -53,7 +55,7 @@ SPEECH_START_FRAMES_NEEDED = int(os.getenv("SPEECH_START_FRAMES_NEEDED", "3"))
 
 # Multi-turn conversation: after the wake word (or after Jarvis finishes speaking), how long to
 # wait for the user to start talking before ending the conversation automatically.
-CONVERSATION_SILENCE_TIMEOUT = float(os.getenv("CONVERSATION_SILENCE_TIMEOUT", "3.0"))
+CONVERSATION_SILENCE_TIMEOUT = float(os.getenv("CONVERSATION_SILENCE_TIMEOUT", "5.0"))
 
 GREETINGS_DIR = MODELS_DIR  # pre-generated "Ich höre Sie, Master." etc, greeting-*.wav
 
