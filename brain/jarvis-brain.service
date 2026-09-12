@@ -1,0 +1,14 @@
+[Unit]
+Description=Jarvis Brain (voice assistant backend)
+After=network.target
+
+[Service]
+Type=simple
+User=olus
+WorkingDirectory=/apps/homeserver/jarvis-brain
+ExecStart=/apps/homeserver/jarvis-brain/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8420
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

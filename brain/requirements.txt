@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+requests
+pydantic
+faster-whisper
+google-genai
+soundfile
+numpy
+beautifulsoup4

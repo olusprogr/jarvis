@@ -1,0 +1,22 @@
+# Uninstalls Jarvis Voice Client. Re-launches itself from %TEMP% so it isn't
+# trying to delete the folder it's currently running from.
+$ErrorActionPreference = 'SilentlyContinue'
+$InstallDir = "$env:LOCALAPPDATA\JarvisClient"
+$Marker = "$env:TEMP\jarvis-uninstall-relaunched.flag"
+
+if (-not (Test-Path $Marker)) {
+    New-Item -ItemType File -Path $Marker -Force | Out-Null
+    $tempCopy = "$env:TEMP\jarvis-uninstall.ps1"
+    Copy-Item -Path $MyInvocation.MyCommand.Path -Destination $tempCopy -Force
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempCopy`"" -WindowStyle Hidden
+    exit
+}
+
+Get-Process JarvisClient -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 1
+
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\JarvisClient.lnk" -Force
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\JarvisClient.lnk" -Force
+Remove-Item "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\JarvisClient" -Recurse -Force
+Remove-Item $InstallDir -Recurse -Force
+Remove-Item $Marker -Force

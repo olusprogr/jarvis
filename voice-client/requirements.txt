@@ -1,0 +1,6 @@
+openwakeword
+sounddevice
+soundfile
+numpy
+requests
+python-dotenv
