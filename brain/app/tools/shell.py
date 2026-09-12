@@ -14,16 +14,18 @@ def _log(command: str, output: str, returncode: int) -> None:
         f.write(f"\n[{stamp}] rc={returncode} $ {command}\n{output}\n")
 
 
-def run_shell_command(command: str, timeout_seconds: int = 60) -> str:
-    """Execute a shell command on the Raspberry Pi (full system access, runs as user 'olus').
-    Use this for anything the user could do themselves on their machine: check system status,
-    manage files, control services (sudo available via 'sudo -S' is NOT pre-authenticated,
-    prefer commands that don't need sudo), install things, run scripts, query processes, etc.
-    Long-running or destructive commands: briefly say out loud what you are about to do first.
+def run_shell_command(command: str, timeout_seconds: int = 120) -> str:
+    """Execute a shell command on the Raspberry Pi. Runs as user 'olus' with passwordless sudo,
+    so `sudo` works directly for anything needing root (apt install, systemctl, editing /etc,
+    docker, ...). Use this for anything the user could do themselves: check system status,
+    manage files, control services, install software, write and run code, query processes.
+    Destructive or hard-to-undo commands: briefly say out loud what you're about to do first.
+    Commands must be non-interactive (nothing that waits for input) -- use flags like `-y`.
 
     Args:
         command: the shell command to run (bash).
-        timeout_seconds: max seconds to wait before killing it (default 60).
+        timeout_seconds: max seconds to wait before killing it (default 120; raise it for
+            slow installs or builds).
     """
     try:
         proc = subprocess.run(
