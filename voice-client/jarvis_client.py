@@ -6,11 +6,8 @@ import io
 import json
 import logging
 import random
-import subprocess
 import sys
-import threading
 import time
-import urllib.parse
 import uuid
 from collections import deque
 
@@ -49,44 +46,6 @@ status = StatusWindow()
 # Reused across requests so the TCP connection to the Pi stays warm (keep-alive) instead of
 # a fresh handshake every single turn -- small but free latency win on every exchange.
 _http = requests.Session()
-
-
-def notify(title: str, message: str, duration_ms: int = 4000) -> None:
-    """Shows a Windows notification bottom-right via a hidden PowerShell helper,
-    without blocking the caller. Uses a plain WinForms balloon tip rather than a
-    packaged library (e.g. win11toast) -- those pull in WinRT/COM bindings that
-    crash PyInstaller's dependency analysis when bundled into a frozen exe.
-
-    duration_ms should match how long the thing it's announcing actually takes (e.g. the
-    reply audio's real playback length, or the listening window's timeout) -- a fixed
-    duration regardless of context is what caused the popups to drift out of sync with
-    what Jarvis was actually doing."""
-    def _show():
-        try:
-            safe_title = title.replace("'", "''")
-            safe_message = (message or "").replace("'", "''")[:500]
-            # Windows clamps the visible balloon to a few seconds regardless of what we ask for,
-            # but the process (and thus the tray icon) needs to stay alive for the full duration
-            # or the balloon gets torn down early -- sleep matches duration_ms, not a fixed value.
-            sleep_seconds = max(1.0, duration_ms / 1000)
-            script = (
-                "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
-                "$n = New-Object System.Windows.Forms.NotifyIcon; "
-                "$n.Icon = [System.Drawing.SystemIcons]::Information; "
-                "$n.Visible = $true; "
-                f"$n.ShowBalloonTip({duration_ms}, '{safe_title}', '{safe_message}', "
-                "[System.Windows.Forms.ToolTipIcon]::Info); "
-                f"Start-Sleep -Seconds {sleep_seconds}; "
-                "$n.Dispose()"
-            )
-            subprocess.run(
-                ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script],
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                timeout=sleep_seconds + 10,
-            )
-        except Exception:
-            log.exception("Benachrichtigung fehlgeschlagen")
-    threading.Thread(target=_show, daemon=True).start()
 
 
 def play_audio(stream: sd.InputStream, data: np.ndarray, sr: int) -> None:
@@ -240,28 +199,22 @@ def send_to_jarvis(stream: sd.InputStream, audio: np.ndarray, session_id: str) -
         )
     except requests.RequestException as e:
         log.error("Anfrage an Jarvis fehlgeschlagen: %s", e)
-        notify("Jarvis", f"Konnte den Pi nicht erreichen: {e}")
         return None
 
     if resp.status_code != 200:
         log.error("Jarvis antwortete mit %s: %s", resp.status_code, resp.text[:500])
-        notify("Jarvis", f"Fehler vom Server ({resp.status_code})")
         return None
 
     ended = False
-    notified = False
     mic_paused = False
     try:
         for kind, payload in _iter_frames(resp):
             if kind == b"S":
                 # Sentence text arrives just before its audio -- show it live in the status
-                # window, and fire the (slower, transient) toast once for the first sentence.
+                # window so the current sentence is readable while it's being spoken.
                 text = json.loads(payload.decode("utf-8")).get("text", "")
                 if text:
                     status.set_state("speaking", text)
-                    if not notified:
-                        notify("Jarvis spricht", text[:250])
-                        notified = True
             elif kind == b"A":
                 if not mic_paused:
                     stream.stop()
@@ -297,25 +250,21 @@ def run_conversation(stream: sd.InputStream) -> None:
 
         while True:
             status.set_state("waiting")
-            notify("Jarvis hört zu", "Du bist dran ...", duration_ms=int(config.CONVERSATION_SILENCE_TIMEOUT * 1000))
             utterance = record_utterance(stream, start_timeout_seconds=config.CONVERSATION_SILENCE_TIMEOUT)
             if utterance is None:
                 log.info("Keine Antwort innerhalb %.0fs -- Chat beendet.", config.CONVERSATION_SILENCE_TIMEOUT)
                 status.set_state("ended")
-                notify("Jarvis", "Chat beendet.")
                 play_goodbye(stream)
                 return
 
             ended = send_to_jarvis(stream, utterance, session_id)
             if ended is None:  # request failed -- don't loop forever on a broken connection
                 status.set_state("ended", "Verbindungsfehler")
-                notify("Jarvis", "Chat beendet (Fehler).")
                 time.sleep(1.5)
                 return
             if ended:
                 log.info("Jarvis hat das Gespräch beendet.")
                 status.set_state("ended")
-                notify("Jarvis", "Chat beendet.")
                 time.sleep(1.2)
                 return
             # else: loop back around for the next turn, still listening
