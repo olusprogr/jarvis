@@ -27,8 +27,8 @@ All endpoints except `/health` and the webhook require header `X-Jarvis-Key: <JA
   quality but the free tier caps out around 10 requests/day per model) → local Piper
   (`synthesize_piper()`, unlimited fallback, needs the binary + voice models downloaded
   separately, see below).
-- **Tools** (`app/tools/`): `run_shell_command` (full, unrestricted shell access — deliberate,
-  see the system prompt in `agent.py`), `obsidian_write_note`/`read_note`/`list_notes`/`search`
+- **Tools** (`app/tools/`): `run_shell_command` (full, unrestricted shell access **including
+  root** — deliberate, see "Root access" below), `obsidian_write_note`/`read_note`/`list_notes`/`search`
   (the vault at `./vault` is Jarvis's persistent long-term memory), `web_search`
   (DuckDuckGo, no key), `notify_phone` (push to the phone via the Telegram bot),
   `end_conversation` (lets the agent signal a multi-turn session is over).
@@ -47,6 +47,26 @@ cp .env.example .env   # fill in GEMINI_API_KEY, JARVIS_API_KEY, etc. -- see bel
   [piper-voices on HuggingFace](https://huggingface.co/rhasspy/piper-voices)
 - `ffmpeg` with `librubberband` + `deesser` filters compiled in (used for the Edge TTS voice
   processing chain) — Debian's `apt install ffmpeg` has these on trixie/13+
+
+### Root access
+
+`run_shell_command`'s docstring tells the model `sudo` is available without a password, so if
+you want that to be true you have to grant it explicitly:
+
+```bash
+echo "$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/010-jarvis-nopasswd
+sudo chmod 440 /etc/sudoers.d/010-jarvis-nopasswd
+sudo visudo -c   # must print "parsed OK"
+```
+
+Revoke any time with `sudo rm /etc/sudoers.d/010-jarvis-nopasswd` — no code changes needed.
+
+**Think about this one before you run it.** The agent reads *untrusted* input (emails, web
+search results, Telegram messages), so content written by someone else can end up in its
+context. Untrusted input plus root is a real prompt-injection path to a wrecked machine. Every
+command is logged to `logs/commands.log`, but that's forensics, not prevention. Skipping this
+step is a perfectly reasonable choice — the agent still works, it just can't do things that
+need root.
 
 **Config (`.env`):**
 - `GEMINI_API_KEY` — https://aistudio.google.com/apikey

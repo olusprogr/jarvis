@@ -26,11 +26,16 @@ independent of which one you're using at the moment.
 
 ## Why full shell access?
 
-The agent's `run_shell_command` tool is deliberately unrestricted — this was an explicit choice
-(not a default) to make Jarvis able to do "anything you could do yourself" on the Pi. Every
-command it runs is logged for audit (`brain/logs/commands.log`). If you deploy this yourself,
-decide consciously whether you want that same trade-off — see `brain/app/agent.py`'s system
-prompt and `brain/app/tools/shell.py`.
+The agent's `run_shell_command` tool is deliberately unrestricted — an explicit choice, not a
+default — so Jarvis can do "anything you could do yourself" on the Pi. On the machine this was
+built for it also has passwordless `sudo`, i.e. root. Every command is logged to
+`brain/logs/commands.log`.
+
+If you deploy this yourself, make that call consciously. The agent reads untrusted input
+(emails, web search results, Telegram messages), so someone else's text can reach its context —
+combined with root, that's a real prompt-injection path to a wrecked machine. Granting root is
+opt-in and documented in [brain/README.md](brain/README.md#root-access); leaving it out still
+gives you a fully working assistant.
 
 ## Setup
 
