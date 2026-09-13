@@ -33,6 +33,10 @@ PC that the agent requests (open an app, a URL, ...) — see "PC control" below.
 - **Mic selection**: `choose_mic()` probes each candidate device briefly on startup (configured
   `MIC_DEVICE` → OS default → loudest of everything else) so a silent or unopenable default mic
   gets detected and logged instead of Jarvis just never hearing you.
+- **System tray icon**: `tray_icon.py` shows a permanent blue "J" icon in the notification area
+  (bottom-right, `pystray`) whenever the client is running — the status window only appears
+  *during* a conversation, so this is the always-visible "yes, Jarvis is on" signal. Menu:
+  open the log folder, or quit.
 
 ## PC control
 
@@ -51,6 +55,24 @@ only exist on the Pi if `app/tools/pc_control.py` is deployed there (see
 [brain/README.md](../brain/README.md#pc-control)). Leaving either side out gives you a fully
 working voice assistant that simply can't touch this PC.
 
+## Browser control
+
+Same polling channel as PC control, but for the `browser_open`/`browser_click`/`browser_fill`/
+`browser_press`/`browser_read`/`browser_close` tools (see
+[brain/README.md](../brain/README.md#browser-control)): `pc_agent.py` keeps one Playwright
+Chromium window open across calls instead of spawning a fresh process per action, so a click
+after a navigate lands on the page that actually loaded. Needs a one-time extra install:
+
+```powershell
+./venv/Scripts/pip install playwright
+./venv/Scripts/python -m playwright install chromium
+```
+
+`playwright` is already in `requirements.txt`; only the browser binary (`playwright install`)
+is the separate step, same idea as Piper's voice models on the brain side. If it's missing, a
+browser action just returns a clear error telling you to run the command above instead of
+crashing the client.
+
 ## Setup (dev)
 
 ```powershell
@@ -63,7 +85,7 @@ Copy-Item .env.example .env   # fill in JARVIS_URL + JARVIS_API_KEY (same key as
 ## Build + install as a real background app
 
 ```powershell
-./venv/Scripts/pyinstaller --onefile --noconsole --name JarvisClient jarvis_client.py
+./venv/Scripts/pyinstaller --onefile --noconsole --name JarvisClient --hidden-import=pystray._win32 jarvis_client.py
 ./install.ps1
 ```
 

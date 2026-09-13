@@ -1,15 +1,17 @@
 import asyncio
 import json
 import logging
+import secrets
 import urllib.parse
 
+import requests
 from fastapi import BackgroundTasks, FastAPI, Depends, Header, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import Response, JSONResponse, StreamingResponse
+from fastapi.responses import Response, JSONResponse, RedirectResponse, StreamingResponse
 from langdetect import detect, LangDetectException
 
 from . import config, tts, agent, telegram_bot
 from .auth import require_api_key
-from .tools import pc_control
+from .tools import pc_control, spotify_tool
 
 DEFAULT_LANGUAGE = "de"  # used only if reply-language detection fails outright
 
@@ -165,6 +167,49 @@ def pc_result(payload: dict, _auth=Depends(require_api_key)):
         int(payload.get("exit_code", 0)),
     )
     return {"ok": True}
+
+
+_spotify_oauth_state = ""
+
+
+@app.get("/jarvis/spotify-login")
+def spotify_login():
+    """Open this URL in a browser once to grant Jarvis Spotify playback control. No X-Jarvis-Key
+    needed -- it's a browser redirect to Spotify's own consent screen, not an API call."""
+    global _spotify_oauth_state
+    _spotify_oauth_state = secrets.token_urlsafe(16)
+    params = {
+        "client_id": config.SPOTIFY_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": config.SPOTIFY_REDIRECT_URI,
+        "scope": "user-read-playback-state user-modify-playback-state user-read-currently-playing",
+        "state": _spotify_oauth_state,
+    }
+    return RedirectResponse("https://accounts.spotify.com/authorize?" + urllib.parse.urlencode(params))
+
+
+@app.get("/jarvis/spotify-callback")
+def spotify_callback(code: str = "", state: str = "", error: str = ""):
+    """Spotify redirects here after the user approves (or denies) consent on the page from
+    /jarvis/spotify-login. Exchanges the auth code for a refresh token and hands it to
+    spotify_tool, which persists it to .env so it survives a restart."""
+    if error:
+        return Response(f"Spotify-Verbindung abgelehnt: {error}", media_type="text/plain")
+    if not state or state != _spotify_oauth_state:
+        raise HTTPException(400, "Ungueltiger state -- bitte /jarvis/spotify-login neu oeffnen.")
+    try:
+        resp = requests.post("https://accounts.spotify.com/api/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": config.SPOTIFY_REDIRECT_URI,
+            "client_id": config.SPOTIFY_CLIENT_ID,
+            "client_secret": config.SPOTIFY_CLIENT_SECRET,
+        }, timeout=10)
+        resp.raise_for_status()
+        spotify_tool.set_refresh_token(resp.json()["refresh_token"])
+    except requests.RequestException as e:
+        return Response(f"Spotify-Verbindung fehlgeschlagen: {e}", media_type="text/plain")
+    return Response("Spotify verbunden. Dieses Fenster kann geschlossen werden.", media_type="text/plain")
 
 
 @app.exception_handler(Exception)

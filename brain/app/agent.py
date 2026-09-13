@@ -13,6 +13,11 @@ from .tools.websearch import web_search, fetch_url
 from .tools.phone_notify import notify_phone
 from .tools.email_tool import list_unread_emails, read_email, search_emails, send_email
 from .tools.pc_control import run_on_pc
+from .tools.browser_tool import browser_open, browser_click, browser_fill, browser_press, browser_read, browser_close
+from .tools.spotify_tool import (
+    spotify_search_and_play, spotify_pause, spotify_resume, spotify_next, spotify_previous,
+    spotify_set_volume, spotify_current_track,
+)
 
 log = logging.getLogger("jarvis.agent")
 
@@ -47,6 +52,10 @@ recherchieren, programmieren, konfigurieren, installieren, ändern, löschen. Be
 oder schwer umkehrbaren Aktionen kurz ansagen, was du tust, bevor du es tust.
 - run_on_pc führt Befehle auf dem Windows-PC des Nutzers aus (nicht auf dem Pi): Webseiten und \
 Programme öffnen, Wiedergabe steuern, PC-Dateien. run_shell_command betrifft nur den Pi.
+- browser_open/click/fill/press/read/close steuern einen echten, sichtbaren Browser auf dem PC \
+für Aufgaben, die Durchklicken brauchen (Formulare, mehrstufige Abläufe) — fetch_url reicht nur \
+zum Lesen. spotify_* steuert Spotify offiziell (Suche/Play/Pause/Skip/Lautstärke), braucht ein \
+aktives Gerät (App offen) und Premium für Steuerung.
 festhalten, und nachschauen statt zu fragen, was du wissen könntest.
 - web_search findet Seiten, fetch_url liest sie aus. Für Nachrichten, aktuelle Zahlen oder \
 Artikelinhalte reicht die Trefferliste nie — immer mit fetch_url nachladen, bei News am besten \
@@ -63,6 +72,19 @@ nachfragen. Im Zweifel weiterreden; nach ein paar Sekunden Stille beendet das Sy
 TOOLS = [
     run_shell_command,
     run_on_pc,
+    browser_open,
+    browser_click,
+    browser_fill,
+    browser_press,
+    browser_read,
+    browser_close,
+    spotify_search_and_play,
+    spotify_pause,
+    spotify_resume,
+    spotify_next,
+    spotify_previous,
+    spotify_set_volume,
+    spotify_current_track,
     obsidian_write_note,
     obsidian_read_note,
     obsidian_list_notes,

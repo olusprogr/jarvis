@@ -43,6 +43,12 @@ All endpoints except `/health` and the webhook require header `X-Jarvis-Key: <JA
   - `run_shell_command` — full, unrestricted shell access, **including root** if configured
     (deliberate, see "Root access" below)
   - `run_on_pc` — runs a command on the user's Windows PC, not the Pi (see "PC control" below)
+  - `browser_open` / `browser_click` / `browser_fill` / `browser_press` / `browser_read` /
+    `browser_close` — drives a real, visible browser window on the user's PC (Playwright) for
+    anything that needs clicking through a site, not just reading it (see "Browser control" below)
+  - `spotify_search_and_play` / `spotify_pause` / `spotify_resume` / `spotify_next` /
+    `spotify_previous` / `spotify_set_volume` / `spotify_current_track` — official Spotify Web
+    API playback control (see "Spotify" below)
   - `obsidian_write_note` / `read_note` / `list_notes` / `search` — the vault at `./vault` is
     Jarvis's persistent long-term memory
   - `web_search` — DuckDuckGo results (titles + snippets only), no API key
@@ -103,6 +109,31 @@ history for the exact diff, or the [voice-client README](../voice-client/README.
 for the PC side). Same trade-off as root, one machine further: the agent reads untrusted content
 and, with this enabled, can act on a second machine because of it. Decide consciously.
 
+### Browser control
+
+`app/tools/browser_tool.py` drives a real, visible browser window on the PC via the same
+inverted-polling channel as PC control, but the PC side (`pc_agent.py`) keeps a **persistent**
+Playwright browser/page alive between calls instead of a fresh one-shot process each time — so a
+`browser_click` after a `browser_open` acts on the page that actually loaded. Use for anything
+that needs clicking through a site (forms, logins, multi-step flows); `fetch_url` stays the
+read-only, no-PC-needed option for just reading a page. Clicks/fills are matched by visible
+text/label, not brittle CSS selectors, so the model can act on what it's actually told is on the
+page. Needs `playwright` installed on the PC and `playwright install chromium` run once (see the
+[voice-client README](../voice-client/README.md#browser-control)) — same not-deployed-by-default
+trade-off as PC control, one step further (the agent can now drive a real logged-in browser).
+
+### Spotify
+
+`app/tools/spotify_tool.py` uses the official Spotify Web API (search/play/pause/skip/volume) —
+not screen-scraping the desktop app or faking media-key presses. Needs Spotify Premium for
+playback-control endpoints, and an *active device* (the app open and signed in somewhere).
+
+Setup: create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard),
+set its redirect URI to match `SPOTIFY_REDIRECT_URI` below, put the Client ID/Secret in `.env`,
+then open `GET /jarvis/spotify-login` in a browser once (no `X-Jarvis-Key` needed, it's a plain
+redirect to Spotify's own consent screen) — the refresh token it gets back is persisted to `.env`
+automatically, no restart needed.
+
 **Config (`.env`):**
 - `GEMINI_API_KEY` — https://aistudio.google.com/apikey
 - `JARVIS_API_KEY` — any long random string, shared with the PC client's `.env`
@@ -118,6 +149,8 @@ and, with this enabled, can act on a second machine because of it. Decide consci
 - `EMAIL_ADDRESS` / `EMAIL_APP_PASSWORD` — a Gmail "App Password"
   (myaccount.google.com/apppasswords, needs 2-Step Verification turned on first), not OAuth.
   Override `EMAIL_IMAP_HOST` / `EMAIL_SMTP_HOST` for a non-Gmail provider.
+- `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` / `SPOTIFY_REDIRECT_URI` / `SPOTIFY_REFRESH_TOKEN`
+  — see "Spotify" above. Leave `SPOTIFY_CLIENT_ID` empty to skip the tools entirely.
 
 ## Run
 
