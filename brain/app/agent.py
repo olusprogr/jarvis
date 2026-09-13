@@ -126,6 +126,40 @@ def get_session(session_id: str):
     return _sessions[session_id]
 
 
+def _session_history(session_id: str):
+    """The current chat's history, if any -- passed to the OmniRoute fallback so a mid-conversation
+    switch doesn't forget what was already said."""
+    chat = _sessions.get(session_id)
+    if chat is None:
+        return None
+    try:
+        return chat.get_history()
+    except Exception:
+        return None
+
+
+def _try_omniroute(session_id: str, *, user_text: str = "", audio_bytes: bytes = b"",
+                   mime_type: str = "audio/wav") -> str | None:
+    """Last resort once every Gemini model is exhausted. Returns the reply, or None if the
+    fallback is disabled or itself failed -- callers then surface the original Gemini error
+    rather than pretending the request succeeded."""
+    if not config.OMNIROUTE_ENABLED:
+        log.warning("[%s] Gemini-Kette erschoepft, OmniRoute-Fallback ist deaktiviert.", session_id)
+        return None
+    try:
+        from . import omniroute_fallback
+        log.warning("[%s] Gemini-Kette erschoepft, weiche auf OmniRoute aus.", session_id)
+        history = _session_history(session_id)
+        if audio_bytes:
+            return omniroute_fallback.ask_audio(
+                SYSTEM_INSTRUCTION, TOOLS, audio_bytes, mime_type=mime_type, history=history,
+            )
+        return omniroute_fallback.ask(SYSTEM_INSTRUCTION, TOOLS, user_text, history=history)
+    except Exception:
+        log.exception("[%s] OmniRoute-Fallback ebenfalls fehlgeschlagen", session_id)
+        return None
+
+
 def _advance_model(session_id: str) -> str | None:
     """Falls the given session's model just failed (quota or otherwise), moves it to the next
     model in the chain, carrying over the conversation history. Returns the new model name, or
@@ -157,7 +191,10 @@ def ask(session_id: str, user_text: str) -> tuple[str, bool]:
             except Exception:
                 log.exception("[%s] Modell-Anfrage fehlgeschlagen", session_id)
                 if _advance_model(session_id) is None:
-                    raise
+                    fallback = _try_omniroute(session_id, user_text=user_text)
+                    if fallback is None:
+                        raise
+                    return fallback, _end_flags.get(session_id, False)
     finally:
         _current_session_id.reset(token)
     reply = (response.text or "").strip()
@@ -185,7 +222,12 @@ def ask_audio(session_id: str, audio_bytes: bytes, mime_type: str = "audio/wav")
             except Exception:
                 log.exception("[%s] Modell-Anfrage fehlgeschlagen", session_id)
                 if _advance_model(session_id) is None:
-                    raise
+                    fallback = _try_omniroute(
+                        session_id, audio_bytes=audio_bytes, mime_type=mime_type,
+                    )
+                    if fallback is None:
+                        raise
+                    return fallback, _end_flags.get(session_id, False)
     finally:
         _current_session_id.reset(token)
     reply = (response.text or "").strip()
@@ -215,6 +257,7 @@ def ask_audio_streaming(session_id: str, audio_bytes: bytes, mime_type: str = "a
         # we let errors propagate -- restarting mid-reply would mean repeating sentences.
         stream_iter = None
         first_chunk = None
+        fallback_reply = None
         for _ in range(len(GEMINI_MODEL_CHAIN)):
             chat = get_session(session_id)
             try:
@@ -229,7 +272,26 @@ def ask_audio_streaming(session_id: str, audio_bytes: bytes, mime_type: str = "a
             except Exception:
                 log.exception("[%s] Streaming-Anfrage fehlgeschlagen", session_id)
                 if _advance_model(session_id) is None:
-                    raise
+                    fallback_reply = _try_omniroute(
+                        session_id, audio_bytes=audio_bytes, mime_type=mime_type,
+                    )
+                    if fallback_reply is None:
+                        raise
+                    stream_iter = None
+                    break
+
+        if fallback_reply is not None:
+            # OmniRoute answers in one piece rather than streaming, so split the finished reply
+            # into the same sentence units the client expects and emit them back-to-back. The
+            # client's playback path is identical either way -- it just won't overlap synthesis
+            # with generation the way the Gemini path does.
+            log.info("[%s] Jarvis (OmniRoute): %s", session_id, fallback_reply)
+            pieces = [p for p in (s.strip() for s in _SENTENCE_END.split(fallback_reply)) if p]
+            for piece in pieces[:-1]:
+                yield piece, False, False
+            yield (pieces[-1] if pieces else "Kannst du das nochmal sagen?"), True, \
+                _end_flags.get(session_id, False)
+            return
 
         def _chunks():
             if first_chunk is not None:
