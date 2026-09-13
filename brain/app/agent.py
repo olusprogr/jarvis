@@ -93,9 +93,25 @@ _session_model_idx: dict[str, int] = {}
 
 # Fallback chain, same idea as tts.py's TTS backends: each model has its own separate free-tier
 # daily quota bucket, so on a 429/quota error we hop to the next one instead of going dark on
-# every channel until midnight Pacific. Configured model tried first; the rest are known-good
-# free-tier models, deduped in case GEMINI_MODEL already names one of them.
-_chain_raw = [config.GEMINI_MODEL, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+# every channel until midnight Pacific. Configured model first, then the rest of the flash family
+# this key actually exposes (checked against models.list() on 2026-09-13 -- an earlier version of
+# this chain listed gemini-2.0-flash, which doesn't exist on this key and just burned a step).
+# Ordered lite-first: the lite variants are the cheapest, and quality matters less than staying
+# alive by the time we're this far down the chain. Failures here are 429s, which come back
+# immediately, so a long chain doesn't translate into a long wait.
+_chain_raw = [
+    config.GEMINI_MODEL,
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+]
 _seen: set[str] = set()
 GEMINI_MODEL_CHAIN = [m for m in _chain_raw if m and not (m in _seen or _seen.add(m))]
 
