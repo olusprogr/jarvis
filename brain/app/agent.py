@@ -79,6 +79,15 @@ TOOLS = [
 
 _client: genai.Client | None = None
 _sessions: dict[str, "genai.chats.Chat"] = {}
+_session_model_idx: dict[str, int] = {}
+
+# Fallback chain, same idea as tts.py's TTS backends: each model has its own separate free-tier
+# daily quota bucket, so on a 429/quota error we hop to the next one instead of going dark on
+# every channel until midnight Pacific. Configured model tried first; the rest are known-good
+# free-tier models, deduped in case GEMINI_MODEL already names one of them.
+_chain_raw = [config.GEMINI_MODEL, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+_seen: set[str] = set()
+GEMINI_MODEL_CHAIN = [m for m in _chain_raw if m and not (m in _seen or _seen.add(m))]
 
 
 def get_client() -> genai.Client:
@@ -88,28 +97,57 @@ def get_client() -> genai.Client:
     return _client
 
 
+def _new_chat(model: str, history=None):
+    return get_client().chats.create(
+        model=model,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            tools=TOOLS,
+            temperature=0.4,
+        ),
+        history=history,
+    )
+
+
 def get_session(session_id: str):
     if session_id not in _sessions:
-        client = get_client()
-        _sessions[session_id] = client.chats.create(
-            model=config.GEMINI_MODEL,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                tools=TOOLS,
-                temperature=0.4,
-            ),
-        )
+        idx = _session_model_idx.get(session_id, 0)
+        _sessions[session_id] = _new_chat(GEMINI_MODEL_CHAIN[idx])
     return _sessions[session_id]
+
+
+def _advance_model(session_id: str) -> str | None:
+    """Falls the given session's model just failed (quota or otherwise), moves it to the next
+    model in the chain, carrying over the conversation history. Returns the new model name, or
+    None if the chain is exhausted (caller should give up and let the error surface)."""
+    idx = _session_model_idx.get(session_id, 0) + 1
+    if idx >= len(GEMINI_MODEL_CHAIN):
+        return None
+    _session_model_idx[session_id] = idx
+    model = GEMINI_MODEL_CHAIN[idx]
+    old_chat = _sessions.get(session_id)
+    history = old_chat.get_history() if old_chat is not None else None
+    _sessions[session_id] = _new_chat(model, history=history)
+    log.warning("[%s] Modell-Fehler/Quota, wechsle zu %s", session_id, model)
+    return model
 
 
 def ask(session_id: str, user_text: str) -> tuple[str, bool]:
     """Returns (reply_text, conversation_ended)."""
-    chat = get_session(session_id)
     _end_flags[session_id] = False
     token = _current_session_id.set(session_id)
     try:
         log.info("[%s] User: %s", session_id, user_text)
-        response = chat.send_message(user_text)
+        response = None
+        for _ in range(len(GEMINI_MODEL_CHAIN)):
+            chat = get_session(session_id)
+            try:
+                response = chat.send_message(user_text)
+                break
+            except Exception:
+                log.exception("[%s] Modell-Anfrage fehlgeschlagen", session_id)
+                if _advance_model(session_id) is None:
+                    raise
     finally:
         _current_session_id.reset(token)
     reply = (response.text or "").strip()
@@ -122,14 +160,22 @@ def ask_audio(session_id: str, audio_bytes: bytes, mime_type: str = "audio/wav")
     running a separate local Whisper transcription step first -- cuts a whole slow pipeline
     stage (was 3-10s on the Pi's CPU) down to one Gemini call that does STT+reasoning together.
     Returns (reply_text, conversation_ended)."""
-    chat = get_session(session_id)
     _end_flags[session_id] = False
     token = _current_session_id.set(session_id)
     try:
         log.info("[%s] User (audio, %d bytes)", session_id, len(audio_bytes))
-        response = chat.send_message([
-            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-        ])
+        response = None
+        for _ in range(len(GEMINI_MODEL_CHAIN)):
+            chat = get_session(session_id)
+            try:
+                response = chat.send_message([
+                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                ])
+                break
+            except Exception:
+                log.exception("[%s] Modell-Anfrage fehlgeschlagen", session_id)
+                if _advance_model(session_id) is None:
+                    raise
     finally:
         _current_session_id.reset(token)
     reply = (response.text or "").strip()
@@ -147,16 +193,41 @@ def ask_audio_streaming(session_id: str, audio_bytes: bytes, mime_type: str = "a
     """Like ask_audio(), but a generator yielding (sentence_text, is_final, ended) as Gemini
     produces them. `ended` is only meaningful on the final yield (the end_conversation tool may
     not have been called yet when earlier sentences are emitted)."""
-    chat = get_session(session_id)
     _end_flags[session_id] = False
     token = _current_session_id.set(session_id)
     buffer = ""
     full_reply = ""
     try:
         log.info("[%s] User (audio, %d bytes, streaming)", session_id, len(audio_bytes))
-        for chunk in chat.send_message_stream([
-            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-        ]):
+        # Quota/model errors surface on the *first* chunk pulled from the stream (the actual
+        # request only fires on first next()), so that's the only point we can still swap models
+        # without having already spoken a partial reply to the user. Once streaming is under way
+        # we let errors propagate -- restarting mid-reply would mean repeating sentences.
+        stream_iter = None
+        first_chunk = None
+        for _ in range(len(GEMINI_MODEL_CHAIN)):
+            chat = get_session(session_id)
+            try:
+                stream_iter = iter(chat.send_message_stream([
+                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                ]))
+                first_chunk = next(stream_iter)
+                break
+            except StopIteration:
+                first_chunk = None
+                break
+            except Exception:
+                log.exception("[%s] Streaming-Anfrage fehlgeschlagen", session_id)
+                if _advance_model(session_id) is None:
+                    raise
+
+        def _chunks():
+            if first_chunk is not None:
+                yield first_chunk
+            if stream_iter is not None:
+                yield from stream_iter
+
+        for chunk in _chunks():
             # chunk.text is None on non-text parts (e.g. the function_call chunks that
             # automatic function calling emits) -- skip those, AFC handles them itself.
             if not chunk.text:

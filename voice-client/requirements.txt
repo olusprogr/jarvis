@@ -4,3 +4,5 @@ soundfile
 numpy
 requests
 python-dotenv
+pystray
+Pillow
