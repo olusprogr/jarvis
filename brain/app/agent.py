@@ -93,25 +93,9 @@ _session_model_idx: dict[str, int] = {}
 
 # Fallback chain, same idea as tts.py's TTS backends: each model has its own separate free-tier
 # daily quota bucket, so on a 429/quota error we hop to the next one instead of going dark on
-# every channel until midnight Pacific. Configured model first, then the rest of the flash family
-# this key actually exposes (checked against models.list() on 2026-09-13 -- an earlier version of
-# this chain listed gemini-2.0-flash, which doesn't exist on this key and just burned a step).
-# Ordered lite-first: the lite variants are the cheapest, and quality matters less than staying
-# alive by the time we're this far down the chain. Failures here are 429s, which come back
-# immediately, so a long chain doesn't translate into a long wait.
-_chain_raw = [
-    config.GEMINI_MODEL,
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-flash-lite-latest",
-    "gemini-2.5-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.6-flash",
-    "gemini-3.7-flash",
-    "gemini-3.8-flash",
-    "gemini-flash-latest",
-    "gemini-2.5-flash",
-]
+# every channel until midnight Pacific. Configured model tried first; the rest are known-good
+# free-tier models, deduped in case GEMINI_MODEL already names one of them.
+_chain_raw = [config.GEMINI_MODEL, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
 _seen: set[str] = set()
 GEMINI_MODEL_CHAIN = [m for m in _chain_raw if m and not (m in _seen or _seen.add(m))]
 
@@ -140,40 +124,6 @@ def get_session(session_id: str):
         idx = _session_model_idx.get(session_id, 0)
         _sessions[session_id] = _new_chat(GEMINI_MODEL_CHAIN[idx])
     return _sessions[session_id]
-
-
-def _session_history(session_id: str):
-    """The current chat's history, if any -- passed to the OmniRoute fallback so a mid-conversation
-    switch doesn't forget what was already said."""
-    chat = _sessions.get(session_id)
-    if chat is None:
-        return None
-    try:
-        return chat.get_history()
-    except Exception:
-        return None
-
-
-def _try_omniroute(session_id: str, *, user_text: str = "", audio_bytes: bytes = b"",
-                   mime_type: str = "audio/wav") -> str | None:
-    """Last resort once every Gemini model is exhausted. Returns the reply, or None if the
-    fallback is disabled or itself failed -- callers then surface the original Gemini error
-    rather than pretending the request succeeded."""
-    if not config.OMNIROUTE_ENABLED:
-        log.warning("[%s] Gemini-Kette erschoepft, OmniRoute-Fallback ist deaktiviert.", session_id)
-        return None
-    try:
-        from . import omniroute_fallback
-        log.warning("[%s] Gemini-Kette erschoepft, weiche auf OmniRoute aus.", session_id)
-        history = _session_history(session_id)
-        if audio_bytes:
-            return omniroute_fallback.ask_audio(
-                SYSTEM_INSTRUCTION, TOOLS, audio_bytes, mime_type=mime_type, history=history,
-            )
-        return omniroute_fallback.ask(SYSTEM_INSTRUCTION, TOOLS, user_text, history=history)
-    except Exception:
-        log.exception("[%s] OmniRoute-Fallback ebenfalls fehlgeschlagen", session_id)
-        return None
 
 
 def _advance_model(session_id: str) -> str | None:
@@ -207,10 +157,7 @@ def ask(session_id: str, user_text: str) -> tuple[str, bool]:
             except Exception:
                 log.exception("[%s] Modell-Anfrage fehlgeschlagen", session_id)
                 if _advance_model(session_id) is None:
-                    fallback = _try_omniroute(session_id, user_text=user_text)
-                    if fallback is None:
-                        raise
-                    return fallback, _end_flags.get(session_id, False)
+                    raise
     finally:
         _current_session_id.reset(token)
     reply = (response.text or "").strip()
@@ -238,12 +185,7 @@ def ask_audio(session_id: str, audio_bytes: bytes, mime_type: str = "audio/wav")
             except Exception:
                 log.exception("[%s] Modell-Anfrage fehlgeschlagen", session_id)
                 if _advance_model(session_id) is None:
-                    fallback = _try_omniroute(
-                        session_id, audio_bytes=audio_bytes, mime_type=mime_type,
-                    )
-                    if fallback is None:
-                        raise
-                    return fallback, _end_flags.get(session_id, False)
+                    raise
     finally:
         _current_session_id.reset(token)
     reply = (response.text or "").strip()
@@ -273,7 +215,6 @@ def ask_audio_streaming(session_id: str, audio_bytes: bytes, mime_type: str = "a
         # we let errors propagate -- restarting mid-reply would mean repeating sentences.
         stream_iter = None
         first_chunk = None
-        fallback_reply = None
         for _ in range(len(GEMINI_MODEL_CHAIN)):
             chat = get_session(session_id)
             try:
@@ -288,26 +229,7 @@ def ask_audio_streaming(session_id: str, audio_bytes: bytes, mime_type: str = "a
             except Exception:
                 log.exception("[%s] Streaming-Anfrage fehlgeschlagen", session_id)
                 if _advance_model(session_id) is None:
-                    fallback_reply = _try_omniroute(
-                        session_id, audio_bytes=audio_bytes, mime_type=mime_type,
-                    )
-                    if fallback_reply is None:
-                        raise
-                    stream_iter = None
-                    break
-
-        if fallback_reply is not None:
-            # OmniRoute answers in one piece rather than streaming, so split the finished reply
-            # into the same sentence units the client expects and emit them back-to-back. The
-            # client's playback path is identical either way -- it just won't overlap synthesis
-            # with generation the way the Gemini path does.
-            log.info("[%s] Jarvis (OmniRoute): %s", session_id, fallback_reply)
-            pieces = [p for p in (s.strip() for s in _SENTENCE_END.split(fallback_reply)) if p]
-            for piece in pieces[:-1]:
-                yield piece, False, False
-            yield (pieces[-1] if pieces else "Kannst du das nochmal sagen?"), True, \
-                _end_flags.get(session_id, False)
-            return
+                    raise
 
         def _chunks():
             if first_chunk is not None:

@@ -55,10 +55,6 @@ All endpoints except `/health` and the webhook require header `X-Jarvis-Key: <JA
     Gmail App Password (see `.env` below)
   - `notify_phone` — sends a Telegram message to the user as a phone push
   - `end_conversation` — lets the agent signal a multi-turn voice session is over
-- **Model fallback**: `agent.GEMINI_MODEL_CHAIN` walks a list of Gemini models, hopping to the
-  next on any error (in practice: the free tier's per-model daily quota), carrying conversation
-  history across the switch. Past the end of that chain sits an optional last resort — see
-  "OmniRoute fallback" below.
 
 ## Setup
 
@@ -123,44 +119,6 @@ page. Needs `playwright` installed on the PC and `playwright install chromium` r
 [voice-client README](../voice-client/README.md#browser-control)) — same not-deployed-by-default
 trade-off as PC control, one step further (the agent can now drive a real logged-in browser).
 
-### OmniRoute fallback
-
-When every model in `GEMINI_MODEL_CHAIN` is exhausted, Jarvis would otherwise go dark on *every*
-channel at once (that happened: one exhausted free-tier quota took down voice and Telegram
-together). `app/omniroute_fallback.py` routes that last-resort request through
-[OmniRoute](https://github.com/diegosouzapw/OmniRoute), a local OpenAI-compatible gateway that
-fans out across many providers:
-
-```bash
-npm install -g omniroute          # see below re: not using sudo
-omniroute serve --daemon --no-open
-omniroute autostart enable        # systemd user service, with linger so it survives reboot
-```
-
-Two things make this a genuinely separate code path rather than one more entry in the model chain:
-
-- **No audio.** Gemini takes the raw WAV and does speech-understanding plus reasoning in one
-  call; OmniRoute's free keyless pool is text-only (verified — the model replies that it cannot
-  process audio). So this path transcribes locally first with the otherwise-dormant
-  faster-whisper in `app/stt.py`. Costs a few seconds; slower beats silent.
-- **No automatic function calling.** `google-genai` runs the tool loop itself from plain Python
-  callables. The OpenAI-compatible API needs JSON-schema declarations and a hand-rolled dispatch
-  loop, both in `omniroute_fallback.py`. The schemas are *derived from the same `agent.TOOLS`
-  callables* by introspection, so the two paths can't drift apart. Without this the model would
-  claim to have run commands or sent mail with nothing actually happening.
-
-**Off by default, deliberately.** This path forwards what the user said — which can include mail
-contents, calendar entries and vault notes — to whichever provider the gateway picks, and free
-tiers commonly train on their inputs. Curate the allowed providers in OmniRoute's dashboard (or
-pin `OMNIROUTE_MODEL` to a specific vetted model instead of `auto`) *before* setting
-`OMNIROUTE_ENABLED=true`.
-
-Two deployment notes: install with a user-level npm prefix rather than `sudo npm install -g`, so
-a 400MB third-party package's install scripts don't run as root; and set
-`OMNIROUTE_SERVER_HOST=127.0.0.1` in `~/.omniroute/.env`, because OmniRoute binds `0.0.0.0` with
-no API key by default and its inference plane is then reachable by anything that can route to the
-host.
-
 **Config (`.env`):**
 - `GEMINI_API_KEY` — https://aistudio.google.com/apikey
 - `JARVIS_API_KEY` — any long random string, shared with the PC client's `.env`
@@ -176,8 +134,6 @@ host.
 - `EMAIL_ADDRESS` / `EMAIL_APP_PASSWORD` — a Gmail "App Password"
   (myaccount.google.com/apppasswords, needs 2-Step Verification turned on first), not OAuth.
   Override `EMAIL_IMAP_HOST` / `EMAIL_SMTP_HOST` for a non-Gmail provider.
-- `OMNIROUTE_ENABLED` / `OMNIROUTE_URL` / `OMNIROUTE_MODEL` — see "OmniRoute fallback" above.
-  Leave `OMNIROUTE_ENABLED=false` until you've decided which providers may see your data.
 
 ## Run
 

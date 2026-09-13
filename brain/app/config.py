@@ -51,16 +51,3 @@ EMAIL_IMAP_HOST = os.getenv("EMAIL_IMAP_HOST", "imap.gmail.com")
 EMAIL_IMAP_PORT = int(os.getenv("EMAIL_IMAP_PORT", "993"))
 EMAIL_SMTP_HOST = os.getenv("EMAIL_SMTP_HOST", "smtp.gmail.com")
 EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "465"))
-
-# OmniRoute gateway (app/omniroute_fallback.py) -- last-resort brain once every Gemini model in
-# agent.GEMINI_MODEL_CHAIN is quota-exhausted. Runs locally on the Pi (npm i -g omniroute),
-# bound to loopback.
-# OFF BY DEFAULT ON PURPOSE: this path forwards what the user said -- which can include mail
-# contents, calendar entries and vault notes -- to whichever provider the gateway routes to, and
-# free tiers commonly train on their inputs. Curate the allowed providers in the OmniRoute
-# dashboard first, then set OMNIROUTE_ENABLED=true.
-OMNIROUTE_ENABLED = os.getenv("OMNIROUTE_ENABLED", "false").lower() == "true"
-OMNIROUTE_URL = os.getenv("OMNIROUTE_URL", "http://127.0.0.1:20128/v1")
-# "auto" lets OmniRoute pick from its whole free pool. Pin a concrete model here to keep the
-# fallback inside a provider set you have actually vetted.
-OMNIROUTE_MODEL = os.getenv("OMNIROUTE_MODEL", "auto")
