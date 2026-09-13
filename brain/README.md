@@ -46,9 +46,6 @@ All endpoints except `/health` and the webhook require header `X-Jarvis-Key: <JA
   - `browser_open` / `browser_click` / `browser_fill` / `browser_press` / `browser_read` /
     `browser_close` — drives a real, visible browser window on the user's PC (Playwright) for
     anything that needs clicking through a site, not just reading it (see "Browser control" below)
-  - `spotify_search_and_play` / `spotify_pause` / `spotify_resume` / `spotify_next` /
-    `spotify_previous` / `spotify_set_volume` / `spotify_current_track` — official Spotify Web
-    API playback control (see "Spotify" below)
   - `obsidian_write_note` / `read_note` / `list_notes` / `search` — the vault at `./vault` is
     Jarvis's persistent long-term memory
   - `web_search` — DuckDuckGo results (titles + snippets only), no API key
@@ -122,18 +119,6 @@ page. Needs `playwright` installed on the PC and `playwright install chromium` r
 [voice-client README](../voice-client/README.md#browser-control)) — same not-deployed-by-default
 trade-off as PC control, one step further (the agent can now drive a real logged-in browser).
 
-### Spotify
-
-`app/tools/spotify_tool.py` uses the official Spotify Web API (search/play/pause/skip/volume) —
-not screen-scraping the desktop app or faking media-key presses. Needs Spotify Premium for
-playback-control endpoints, and an *active device* (the app open and signed in somewhere).
-
-Setup: create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard),
-set its redirect URI to match `SPOTIFY_REDIRECT_URI` below, put the Client ID/Secret in `.env`,
-then open `GET /jarvis/spotify-login` in a browser once (no `X-Jarvis-Key` needed, it's a plain
-redirect to Spotify's own consent screen) — the refresh token it gets back is persisted to `.env`
-automatically, no restart needed.
-
 **Config (`.env`):**
 - `GEMINI_API_KEY` — https://aistudio.google.com/apikey
 - `JARVIS_API_KEY` — any long random string, shared with the PC client's `.env`
@@ -149,8 +134,6 @@ automatically, no restart needed.
 - `EMAIL_ADDRESS` / `EMAIL_APP_PASSWORD` — a Gmail "App Password"
   (myaccount.google.com/apppasswords, needs 2-Step Verification turned on first), not OAuth.
   Override `EMAIL_IMAP_HOST` / `EMAIL_SMTP_HOST` for a non-Gmail provider.
-- `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` / `SPOTIFY_REDIRECT_URI` / `SPOTIFY_REFRESH_TOKEN`
-  — see "Spotify" above. Leave `SPOTIFY_CLIENT_ID` empty to skip the tools entirely.
 
 ## Run
 

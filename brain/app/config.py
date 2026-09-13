@@ -51,11 +51,3 @@ EMAIL_IMAP_HOST = os.getenv("EMAIL_IMAP_HOST", "imap.gmail.com")
 EMAIL_IMAP_PORT = int(os.getenv("EMAIL_IMAP_PORT", "993"))
 EMAIL_SMTP_HOST = os.getenv("EMAIL_SMTP_HOST", "smtp.gmail.com")
 EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "465"))
-
-# Spotify Web API (app/tools/spotify_tool.py) -- official playback control. Create an app at
-# developer.spotify.com/dashboard, set its redirect URI to SPOTIFY_REDIRECT_URI below, then open
-# /jarvis/spotify-login in a browser once to grant consent (see README).
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
-SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "https://olusprogr.dynv6.net/jarvis/spotify-callback")
-SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN", "")
